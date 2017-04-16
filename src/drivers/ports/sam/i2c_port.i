@@ -173,7 +173,6 @@
     NVIC TWI0 ID #22 - ISR(twi0)
     NVIC TWI1 ID #23 - ISR(twi1)
 */
-#define SAM_TWI0_SR       ((volatile uint32_t*)0x4008c020u)
 static void isr(int index)
 {
     struct i2c_device_t *dev_p = &i2c_device[index]; /* NVIC TWI0 ID #22 */
@@ -189,10 +188,11 @@ static void isr(int index)
     status = raw_status & dev_p->regs_p->IMR; 
 
 
-    /* status = *SAM_TWI0_SR; */
-/*    std_printf(FSTR("isr_twi Start\n"));
+#ifndef DONTCRASH
+    std_printf(FSTR("isr_twi Start\n"));
     std_printf(FSTR("isr_twi %ld: %lu -> %lu\n"), index, raw_status, status);
-*/
+#endif
+
     /* status twi1 : 61449 - 1111 0000 0000 1001 */
 
     if (status == 0) { return; }
