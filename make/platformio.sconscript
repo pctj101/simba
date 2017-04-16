@@ -154,6 +154,7 @@ BOARDS = {
             "src/drivers/mcp2515.c", 
             "src/drivers/owi.c", 
             "src/drivers/pin.c", 
+            "src/drivers/i2c.c", 
             "src/drivers/i2c_soft.c", 
             "src/drivers/sd.c", 
             "src/drivers/spi.c", 

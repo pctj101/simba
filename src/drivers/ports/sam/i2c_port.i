@@ -143,7 +143,7 @@
 #define SAM_TWI_IDR_RXBUFF      (1 << 14)
 #define SAM_TWI_IDR_TXBUFF      (1 << 15)
 
-/* TWI_IMR - Interrupt Disable Register */
+/* TWI_IMR - Interrupt Mask Register */
 #define SAM_TWI_IMR_TXCOMP      (1)
 #define SAM_TWI_IMR_RXRDY       (1 << 1)
 #define SAM_TWI_IMR_TXRDY       (1 << 2)
@@ -168,72 +168,78 @@
 #define SAM_TWI_THR_MASK        (0xff)
 
 
-/**
- * Transfer data to and from a slave.
- *
- * @return Number of bytes transferred or negative error code.
- */
-static ssize_t transfer(struct i2c_driver_t *self_p,
-                        int address,
-                        void *buf_p,
-                        size_t size,
-                        int direction)
-{
-    self_p->address = ((address << 1) | direction);
-    self_p->buf_p = (void *)buf_p;
-    self_p->size = size;
-    self_p->thrd_p = thrd_self();
-
-    /* Start the transfer by sending the START condition, and then
-       wait for the transfer to complete. */
-    sys_lock();
-    TWCR = (_BV(TWINT) | _BV(TWSTA) | _BV(TWEN) | _BV(TWIE));
-    thrd_suspend_isr(NULL);
-    sys_unlock();
-
-    return (size - self_p->size); /* return delta between "original size" and "remaining size" */
-}
 
 /* There are 2 TWI Vects for SAM: 
     NVIC TWI0 ID #22 - ISR(twi0)
     NVIC TWI1 ID #23 - ISR(twi1)
 */
-ISR(twi0)
+#define SAM_TWI0_SR       ((volatile uint32_t*)0x4008c020u)
+static void isr(int index)
 {
-    struct i2c_device_t *dev_p = &i2c_device[0]; /* NVIC TWI0 ID #22 */
-    /* struct i2c_device_t *dev_p = &i2c_device[1]; */ /* NVIC TWI1 ID #23 - No Pullups do later */
+    struct i2c_device_t *dev_p = &i2c_device[index]; /* NVIC TWI0 ID #22 */
     struct i2c_driver_t *drv_p = dev_p->drv_p;
-    uint8_t status;
+    uint32_t status;
 
     if (drv_p == NULL) {
         return;
     }
 
-    status = (SAM_TWI_SR & 0xffff);
+    /* status = (dev_p->regs_p->SR & 0xffff); */
+    status = *SAM_TWI0_SR;
+    std_printf(FSTR("isr_twi %ld: %ld\n"), index, status);
+            thrd_resume_isr(drv_p->thrd_p, 0);
+    return;
 
+    if (status & SAM_TWI_SR_TXCOMP) {
+        std_printf(FSTR("SAM_TWI_SR_TXCOMP\n"));
+            thrd_resume_isr(drv_p->thrd_p, 0);
+    } else if (status & SAM_TWI_SR_RXRDY) {
+        std_printf(FSTR("SAM_TWI_SR_RXRDY\n"));
+            /* Read a byte */
+            *drv_p->buf_p++ = (uint8_t)(0xff & dev_p->regs_p->RHR); /* Automatically resets RXRDY */
+            drv_p->size--;
+
+            if(drv_p->size == 1) {
+                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
+            }
+    } else if (status & SAM_TWI_SR_TXRDY) {
+        std_printf(FSTR("SAM_TWI_SR_TXRDY\n"));
+            drv_p->dev_p->regs_p->THR = *drv_p->buf_p++;
+            drv_p->size--;
+
+            if(drv_p->size == 1) {
+                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
+            }
+    } else {
+        std_printf(FSTR("SAM_TWI_SR-Other\n"));
+        thrd_resume_isr(drv_p->thrd_p, 0);
+    }
+
+
+    return;
     switch (status) {
         case SAM_TWI_SR_TXCOMP:
             /* All done */
-            if(*drv_p->size == 0) {
+            if(drv_p->size == 0) {
                 thrd_resume_isr(drv_p->thrd_p, 0);
             }
             break;
         case SAM_TWI_SR_RXRDY:
             /* Read a byte */
-            *drv_p->buf_p++ = *drv_p->dev_p->RHR; /* Automatically resets RXRDY */
-            *drv_p->size--;
+            *drv_p->buf_p++ = (uint8_t)(0xff & dev_p->regs_p->RHR); /* Automatically resets RXRDY */
+            drv_p->size--;
 
-            if(*drv_p->size == 1) {
-                *drv_p->dev_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
+            if(drv_p->size == 1) {
+                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
             }
 
             break;
         case SAM_TWI_SR_TXRDY:
-            *drv_p->dev_p->THR = *drv_p->buf_p++;
-            *drv_p->size--;
+            drv_p->dev_p->regs_p->THR = *drv_p->buf_p++;
+            drv_p->size--;
 
-            if(*drv_p->size == 1) {
-                *drv_p->dev_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
+            if(drv_p->size == 1) {
+                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
             }
             break;
         case SAM_TWI_SR_SVREAD:
@@ -250,6 +256,7 @@ ISR(twi0)
             break;
         case SAM_TWI_SR_NACK:
             /* Error */
+            thrd_resume_isr(drv_p->thrd_p, 0);
             break;
         case SAM_TWI_SR_ARBLST:
             /* MultiMaster: Note yet handled */
@@ -270,10 +277,25 @@ ISR(twi0)
             break;
         default:
             /* Error */
+            thrd_resume_isr(drv_p->thrd_p, 0);
             break;
     }
-
 }
+
+#define TWI_ISR(vector, index)                 \
+    ISR(vector) {                               \
+        isr(index);                             \
+    }                                           \
+
+#if (I2C_DEVICE_MAX >= 1)
+TWI_ISR(twi0, 0)
+#endif
+
+#if (I2C_DEVICE_MAX >= 2)
+TWI_ISR(twi1, 1)
+#endif
+
+
 
 int i2c_port_module_init()
 {
@@ -296,6 +318,13 @@ int i2c_port_start(struct i2c_driver_t *self_p)
 {
     self_p->dev_p->drv_p = self_p;
     self_p->thrd_p = NULL;
+
+    
+    self_p->dev_p->regs_p->IDR = (0xfffffffful); /* Disable TWI Interrupts */
+    pmc_peripheral_clock_enable(self_p->dev_p->id);
+    nvic_enable_interrupt(self_p->dev_p->id);
+    /* Enable NVIC */
+
 
     /* Set TWI Clock (CLDIV, CHDIV, CKDIV) in TWI_CWGR
         Tmck from PowerManagementController
@@ -361,7 +390,7 @@ ssize_t i2c_port_read(struct i2c_driver_t *self_p,
         /* TWI_RHR = Byte to Read */
 
     /* Wait for: TXCOMP = 1 (Poll or ISR) */
-    return (transfer(self_p, address, buf_p, size, I2C_READ));
+    return (0);
 }
 
 ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
@@ -378,15 +407,21 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
 
     /* Master Mode: Transfer Direction Bit (Write ===> bit MREAD 1) */
     self_p->dev_p->regs_p->MMR = ((address << 16) & SAM_TWI_MMR_DADR_MASK) | SAM_TWI_MMR_MREAD | ((internalAddressSize & 0b11) << 8);
+    self_p->dev_p->regs_p->IER = SAM_TWI_IER_TXCOMP | SAM_TWI_IER_RXRDY | SAM_TWI_IER_TXRDY | SAM_TWI_IER_NACK;
 
     /* START */
+    /* This action is necessary when the TWI peripheral wants to read data from a slave. When configured in Master Mode with a
+       write operation, a frame is sent as soon as the user writes a character in the Transmit Holding Register (TWI_THR). */
     if (size == 1) {
         /* 1 Byte: TWI_CR = START | STOP */
-        self_p->dev_p->regs_p->CR = SAM_TWI_CR_START | TWI_CR_STOP;
+        self_p->dev_p->regs_p->CR = SAM_TWI_CR_START | SAM_TWI_CR_STOP;
     } else {
         /* > 1  Byte: TWI_CR = START */
         self_p->dev_p->regs_p->CR = SAM_TWI_CR_START;
     }
+
+    std_printf(FSTR("i2c0 IMR: %ld\n"),  self_p->dev_p->regs_p->IMR);
+
 
     /* Loop for N-1 bytes to read*/
         /* Wait for: RXRDY = 1 (Poll or ISR) */
@@ -404,7 +439,9 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
     /* Start the transfer by sending the START condition, and then
        wait for the transfer to complete. */
     sys_lock(); /* Take the system lock. Turns off interrupts. */
+    std_printf(FSTR("i2c read txn sys Lock\n"));
     thrd_suspend_isr(NULL);
+    std_printf(FSTR("i2c read txn sys unlocked\n"));
     sys_unlock(); /* Release the system lock. Turn on interrupts. */
 
     return (size - self_p->size); /* return delta between "original size" and "remaining size" */
@@ -423,28 +460,13 @@ ssize_t i2c_port_write(struct i2c_driver_t *self_p,
         /* Wait for: TXRDY = 1 (Poll or ISR) */
     /* TWI_CR = STOP */
         /* Wait for: TXCOMP = 1 (Poll or ISR) */
-    return (transfer(self_p, address, (void *)buf_p, size, I2C_WRITE));
+    /* return (transfer(self_p, address, (void *)buf_p, size, I2C_WRITE)); */
+    return (0);
 }
 
 int i2c_port_scan(struct i2c_driver_t *self_p,
                   int address)
 {
-    int res;
-/*
-
-    self_p->address = ((address << 1) | I2C_WRITE);
-    self_p->size = 0;
-    self_p->thrd_p = thrd_self();
-
-    /* Start the transfer by sending the START condition, and then
-       wait for the transfer to complete. */
-    sys_lock();
-    TWCR = (_BV(TWINT) | _BV(TWSTA) | _BV(TWEN) | _BV(TWIE));
-    res = thrd_suspend_isr(NULL);
-    sys_unlock();
-
-    return (res == 0);
-*/
     return (0);
 }
 
@@ -468,45 +490,18 @@ int i2c_port_scan(struct i2c_driver_t *self_p,
 
 int i2c_port_slave_start(struct i2c_driver_t *self_p)
 {
-/*
-    self_p->dev_p->drv_p = self_p;
-    self_p->thrd_p = NULL;
-
-    TWSR = 0;
-    TWAR = (self_p->address << 1);
-    TWCR = (_BV(TWEA) | _BV(TWEN) | _BV(TWIE));
-*/
-
     return (0);
 }
 
 int i2c_port_slave_stop(struct i2c_driver_t *self_p)
 {
-/*
     return (0);
-*/
 }
 
 ssize_t i2c_port_slave_read(struct i2c_driver_t *self_p,
                             void *buf_p,
                             size_t size)
 {
-/*
-    sys_lock();
-
-    /* Read immediately if already addressed by the master. */
-    if (self_p->size == -1) {
-        TWCR = (_BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE));
-    }
-
-    self_p->buf_p = (void *)buf_p;
-    self_p->size = size;
-    self_p->thrd_p = thrd_self();
-    thrd_suspend_isr(NULL);
-    sys_unlock();
-
-    return (size - self_p->size);
-*/
     return (0);
 }
 
@@ -514,29 +509,6 @@ ssize_t i2c_port_slave_write(struct i2c_driver_t *self_p,
                              const void *buf_p,
                              size_t size)
 {
-/*
-    sys_lock();
-    self_p->buf_p = (void *)buf_p;
-
-    /* Write immediately if already addressed by the master. */
-    if (self_p->size == -1) {
-        TWDR = *self_p->buf_p++;
-
-        if (size > 1) {
-            TWCR = (_BV(TWINT) | _BV(TWEA) | _BV(TWEN) | _BV(TWIE));
-        } else {
-            /* Last data transmission. */
-            TWCR = (_BV(TWINT) | _BV(TWEN) | _BV(TWIE));
-        }
-    }
-
-    self_p->size = size;
-    self_p->thrd_p = thrd_self();
-    thrd_suspend_isr(NULL);
-    sys_unlock();
-
-    return (size - self_p->size);
-*/
     return(0);
 }
 
