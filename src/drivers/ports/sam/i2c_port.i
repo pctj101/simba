@@ -178,23 +178,33 @@ static void isr(int index)
 {
     struct i2c_device_t *dev_p = &i2c_device[index]; /* NVIC TWI0 ID #22 */
     struct i2c_driver_t *drv_p = dev_p->drv_p;
+    uint32_t raw_status;
     uint32_t status;
 
     if (drv_p == NULL) {
         return;
     }
 
-    /* status = (dev_p->regs_p->SR & 0xffff); */
-    status = *SAM_TWI0_SR;
-    std_printf(FSTR("isr_twi %ld: %ld\n"), index, status);
-            thrd_resume_isr(drv_p->thrd_p, 0);
-    return;
+    raw_status = (dev_p->regs_p->SR & 0xffff); 
+    status = raw_status & dev_p->regs_p->IMR; 
+
+
+    /* status = *SAM_TWI0_SR; */
+/*    std_printf(FSTR("isr_twi Start\n"));
+    std_printf(FSTR("isr_twi %ld: %lu -> %lu\n"), index, raw_status, status);
+*/
+    /* status twi1 : 61449 - 1111 0000 0000 1001 */
+
+    if (status == 0) { return; }
+
+/*
+    std_printf(FSTR("isr_twi %ld: process\n"), index);
+*/
 
     if (status & SAM_TWI_SR_TXCOMP) {
-        std_printf(FSTR("SAM_TWI_SR_TXCOMP\n"));
+            dev_p->regs_p->IDR = 0xffff;
             thrd_resume_isr(drv_p->thrd_p, 0);
     } else if (status & SAM_TWI_SR_RXRDY) {
-        std_printf(FSTR("SAM_TWI_SR_RXRDY\n"));
             /* Read a byte */
             *drv_p->buf_p++ = (uint8_t)(0xff & dev_p->regs_p->RHR); /* Automatically resets RXRDY */
             drv_p->size--;
@@ -203,7 +213,6 @@ static void isr(int index)
                 drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
             }
     } else if (status & SAM_TWI_SR_TXRDY) {
-        std_printf(FSTR("SAM_TWI_SR_TXRDY\n"));
             drv_p->dev_p->regs_p->THR = *drv_p->buf_p++;
             drv_p->size--;
 
@@ -211,12 +220,14 @@ static void isr(int index)
                 drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
             }
     } else {
-        std_printf(FSTR("SAM_TWI_SR-Other\n"));
+        dev_p->regs_p->IDR = 0xffff;;
         thrd_resume_isr(drv_p->thrd_p, 0);
     }
 
 
     return;
+
+#ifdef USE_SWITCH
     switch (status) {
         case SAM_TWI_SR_TXCOMP:
             /* All done */
@@ -280,6 +291,7 @@ static void isr(int index)
             thrd_resume_isr(drv_p->thrd_p, 0);
             break;
     }
+#endif
 }
 
 #define TWI_ISR(vector, index)                 \
@@ -319,11 +331,25 @@ int i2c_port_start(struct i2c_driver_t *self_p)
     self_p->dev_p->drv_p = self_p;
     self_p->thrd_p = NULL;
 
-    
-    self_p->dev_p->regs_p->IDR = (0xfffffffful); /* Disable TWI Interrupts */
+    uint32_t mask;
+    struct i2c_device_t *dev_p = self_p->dev_p;
+    volatile struct sam_pio_t *pio_p;
+
+    /* Configure twd pin. */
+    mask = dev_p->twd_p->mask;
+    pio_p = dev_p->twd_p->pio_p;
+    pio_p->PDR = mask; /* 1: Disables the PIO from controlling the corresponding pin (enables peripheral control of the pin) */
+    pio_p->ABSR &= ~mask; /* 0: Peripheral A Enable */
+
+    /* Configure twck pin. */
+    mask = dev_p->twck_p->mask;
+    pio_p = dev_p->twck_p->pio_p;
+    pio_p->PDR = mask; /* 1: Disables the PIO from controlling the corresponding pin (enables peripheral control of the pin) */
+    pio_p->ABSR &= ~mask;
+
+    /* self_p->dev_p->regs_p->IDR = (0xfffffffful); */ /* Disable TWI Interrupts */
     pmc_peripheral_clock_enable(self_p->dev_p->id);
-    nvic_enable_interrupt(self_p->dev_p->id);
-    /* Enable NVIC */
+    nvic_enable_interrupt(self_p->dev_p->id); 
 
 
     /* Set TWI Clock (CLDIV, CHDIV, CKDIV) in TWI_CWGR
@@ -345,12 +371,19 @@ int i2c_port_start(struct i2c_driver_t *self_p)
         20 = CHDIV * 2^CKDIV  = CHDIV * 8
         20/8 = ~2.5 = CHDIV 
     */
-    self_p->dev_p->regs_p->CWGR = (SAM_TWI_CWGR_CKDIV_MASK & (3 << 16)) |
+    /*self_p->dev_p->regs_p->CWGR = (SAM_TWI_CWGR_CKDIV_MASK & (3 << 16)) |
                                         (SAM_TWI_CWGR_CHDIV_MASK & ( 0x02 << 8) ) |
                                         (SAM_TWI_CWGR_CLDIV_MASK & 0x02);
+    */
+
+    /* Slow it down */
+    self_p->dev_p->regs_p->CWGR = (SAM_TWI_CWGR_CKDIV_MASK & (7 << 16)) |
+                                        (SAM_TWI_CWGR_CHDIV_MASK & ( 0x0f << 8) ) |
+                                        (SAM_TWI_CWGR_CLDIV_MASK & 0x0f);
 
     /* Master Enable: TWI_CR = MSEN + SVDIS */
     self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSEN & SAM_TWI_CR_SVDIS;
+
 
     /* Master Mode: 
         Later on Read/Write Set:
@@ -365,6 +398,8 @@ int i2c_port_start(struct i2c_driver_t *self_p)
 
 int i2c_port_stop(struct i2c_driver_t *self_p)
 {
+    /* Master Disable */
+    self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSDIS & SAM_TWI_CR_SVDIS;
     return (0);
 }
 
@@ -409,6 +444,35 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
     self_p->dev_p->regs_p->MMR = ((address << 16) & SAM_TWI_MMR_DADR_MASK) | SAM_TWI_MMR_MREAD | ((internalAddressSize & 0b11) << 8);
     self_p->dev_p->regs_p->IER = SAM_TWI_IER_TXCOMP | SAM_TWI_IER_RXRDY | SAM_TWI_IER_TXRDY | SAM_TWI_IER_NACK;
 
+
+
+    /* Do this in ISR */
+        /* Loop for N-1 bytes to read*/
+            /* Wait for: RXRDY = 1 (Poll or ISR) */
+            /* TWI_RHR = Byte to Read */
+
+        /* For last 1 byte to read */
+        /* TWI_CR = STOP */
+            /* Wait for: RXRDY = 1 (Poll or ISR) */
+            /* TWI_RHR = Byte to Read */
+
+        /* Wait for: TXCOMP = 1 (Poll or ISR) */
+
+
+
+    /* Start the transfer by sending the START condition, and then
+       wait for the transfer to complete. */
+    /* sys_lock() - Take the system lock. Turns off interrupts. */
+    /* sys_unlock() - Release the system lock. Turns on interrupts. */
+    std_printf(FSTR("i2c0 thrd_p: %ld\n"),  self_p->thrd_p);
+    std_printf(FSTR("i2c0 IMR A: %ld\n"),  self_p->dev_p->regs_p->IMR);
+        // 263: 1 0000 0111
+    std_printf(FSTR("i2c read txn sys Lock\n"));
+
+    /* Enable NVIC */
+
+    std_printf(FSTR("i2c read txn START Read # %d\n"), size);
+    sys_lock(); 
     /* START */
     /* This action is necessary when the TWI peripheral wants to read data from a slave. When configured in Master Mode with a
        write operation, a frame is sent as soon as the user writes a character in the Transmit Holding Register (TWI_THR). */
@@ -419,30 +483,14 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
         /* > 1  Byte: TWI_CR = START */
         self_p->dev_p->regs_p->CR = SAM_TWI_CR_START;
     }
+    std_printf(FSTR("i2c read txn START-post\n"));
 
-    std_printf(FSTR("i2c0 IMR: %ld\n"),  self_p->dev_p->regs_p->IMR);
-
-
-    /* Loop for N-1 bytes to read*/
-        /* Wait for: RXRDY = 1 (Poll or ISR) */
-        /* TWI_RHR = Byte to Read */
-
-    /* For last 1 byte to read */
-    /* TWI_CR = STOP */
-        /* Wait for: RXRDY = 1 (Poll or ISR) */
-        /* TWI_RHR = Byte to Read */
-
-    /* Wait for: TXCOMP = 1 (Poll or ISR) */
-
-
-
-    /* Start the transfer by sending the START condition, and then
-       wait for the transfer to complete. */
-    sys_lock(); /* Take the system lock. Turns off interrupts. */
-    std_printf(FSTR("i2c read txn sys Lock\n"));
+    std_printf(FSTR("i2c0 IMR B: %ld\n"),  self_p->dev_p->regs_p->IMR);
     thrd_suspend_isr(NULL);
+    /* nvic_disable_interrupt(self_p->dev_p->id); */
+    sys_unlock(); 
+
     std_printf(FSTR("i2c read txn sys unlocked\n"));
-    sys_unlock(); /* Release the system lock. Turn on interrupts. */
 
     return (size - self_p->size); /* return delta between "original size" and "remaining size" */
 }

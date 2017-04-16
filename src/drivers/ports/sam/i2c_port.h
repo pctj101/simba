@@ -39,6 +39,8 @@
 struct i2c_device_t {
     struct i2c_driver_t *drv_p;
     volatile struct sam_twi_t *regs_p;
+    struct pin_device_t *twd_p;
+    struct pin_device_t *twck_p;
     int id;
 };
 
