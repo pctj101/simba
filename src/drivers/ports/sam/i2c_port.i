@@ -184,14 +184,22 @@ static void isr(int index)
         return;
     }
 
+    thrd_resume_isr(drv_p->thrd_p, 0);
+    return;
+
+
+
     raw_status = (dev_p->regs_p->SR & 0xffff); 
     status = raw_status & dev_p->regs_p->IMR; 
 
 
+/*
+#define DONTCRASH
 #ifndef DONTCRASH
     std_printf(FSTR("isr_twi Start\n"));
     std_printf(FSTR("isr_twi %ld: %lu -> %lu\n"), index, raw_status, status);
 #endif
+*/
 
     /* status twi1 : 61449 - 1111 0000 0000 1001 */
 
@@ -323,6 +331,50 @@ int i2c_port_init(struct i2c_driver_t *self_p,
     self_p->twbr = baudrate;
     self_p->address = address;
 
+
+
+    return (0);
+}
+
+void i2c_set_clock( struct i2c_device_t *dev_p, uint32_t dwTwCk, uint32_t dwMCk )
+{
+    uint32_t dwCkDiv = 0 ;
+    uint32_t dwClDiv ;
+    uint32_t dwOk = 0 ;
+
+    /* Configure clock */
+    while ( !dwOk )
+    {
+        dwClDiv = ((dwMCk / (2 * dwTwCk)) - 4) / (1<<dwCkDiv) ;
+
+        if ( dwClDiv <= 255 )
+        {
+            dwOk = 1 ;
+        }
+        else
+        {
+            dwCkDiv++ ;
+        }
+    }
+
+    std_printf( FSTR("Using CKDIV = %u and CLDIV/CHDIV = %u\n\r"), dwCkDiv, dwClDiv ) ;
+
+    dev_p->regs_p->CWGR = 0 ;
+    dev_p->regs_p->CWGR = (dwCkDiv << 16) | (dwClDiv << 8) | dwClDiv ;
+}
+
+int i2c_port_stop(struct i2c_driver_t *self_p)
+{
+    /* TWI software reset */
+    self_p->dev_p->regs_p->CR = SAM_TWI_CR_SWRST;
+    self_p->dev_p->regs_p->RHR;
+
+    /* Wait at least 10 ms */
+    for (uint32_t i=0; i < 1000000; i++);
+
+    /* TWI Slave Mode Disabled, TWI Master Mode Disabled*/
+    self_p->dev_p->regs_p->CR = SAM_TWI_CR_SVDIS | SAM_TWI_CR_MSDIS;
+
     return (0);
 }
 
@@ -347,9 +399,17 @@ int i2c_port_start(struct i2c_driver_t *self_p)
     pio_p->PDR = mask; /* 1: Disables the PIO from controlling the corresponding pin (enables peripheral control of the pin) */
     pio_p->ABSR &= ~mask;
 
+    /* SVEN: TWI Slave Mode Enabled */
+    self_p->dev_p->regs_p->CR = SAM_TWI_CR_SVEN;
+    i2c_port_stop(self_p);
+    
+    /* MSEN: TWI Master Mode Enabled */
+    self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSEN;
+    i2c_set_clock( self_p->dev_p, 100000, 84000000);
+
     /* self_p->dev_p->regs_p->IDR = (0xfffffffful); */ /* Disable TWI Interrupts */
     pmc_peripheral_clock_enable(self_p->dev_p->id);
-    nvic_enable_interrupt(self_p->dev_p->id); 
+    /*nvic_enable_interrupt(self_p->dev_p->id);  */
 
 
     /* Set TWI Clock (CLDIV, CHDIV, CKDIV) in TWI_CWGR
@@ -377,12 +437,14 @@ int i2c_port_start(struct i2c_driver_t *self_p)
     */
 
     /* Slow it down */
+    /*
     self_p->dev_p->regs_p->CWGR = (SAM_TWI_CWGR_CKDIV_MASK & (7 << 16)) |
                                         (SAM_TWI_CWGR_CHDIV_MASK & ( 0x0f << 8) ) |
                                         (SAM_TWI_CWGR_CLDIV_MASK & 0x0f);
+    */
 
     /* Master Enable: TWI_CR = MSEN + SVDIS */
-    self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSEN & SAM_TWI_CR_SVDIS;
+    /* self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSEN | SAM_TWI_CR_SVDIS | SAM_TWI_CR_SWRST; */
 
 
     /* Master Mode: 
@@ -396,12 +458,6 @@ int i2c_port_start(struct i2c_driver_t *self_p)
 }
         
 
-int i2c_port_stop(struct i2c_driver_t *self_p)
-{
-    /* Master Disable */
-    self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSDIS & SAM_TWI_CR_SVDIS;
-    return (0);
-}
 
 ssize_t i2c_port_read(struct i2c_driver_t *self_p,
                       int address,
@@ -428,6 +484,7 @@ ssize_t i2c_port_read(struct i2c_driver_t *self_p,
     return (0);
 }
 
+
 ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
                       int address,
                       int internalAddress,
@@ -435,15 +492,40 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
                       void *buf_p,
                       size_t size)
 {
+    struct i2c_device_t *dev_p = self_p->dev_p;
+    std_printf(FSTR("i2c0 port read txn Start\n"));
+
     /* self_p->address = ((address << 1) | direction); */
     self_p->buf_p = (void *)buf_p;
     self_p->size = size;
     self_p->thrd_p = thrd_self();
 
-    /* Master Mode: Transfer Direction Bit (Write ===> bit MREAD 1) */
-    self_p->dev_p->regs_p->MMR = ((address << 16) & SAM_TWI_MMR_DADR_MASK) | SAM_TWI_MMR_MREAD | ((internalAddressSize & 0b11) << 8);
-    self_p->dev_p->regs_p->IER = SAM_TWI_IER_TXCOMP | SAM_TWI_IER_RXRDY | SAM_TWI_IER_TXRDY | SAM_TWI_IER_NACK;
+    std_printf(FSTR("i2c0 port read txn registered args\n"));
 
+    /* Master Mode: Transfer Direction Bit (READ ===> bit MREAD 1) */
+    std_printf(FSTR("i2c0 port read txn master direction\n"));
+    self_p->dev_p->regs_p->MMR = ((address << 16) & SAM_TWI_MMR_DADR_MASK) | SAM_TWI_MMR_MREAD | ((internalAddressSize & 0b11) << 8);
+    std_printf(FSTR("i2c0 port read txn MMR %lu\n"), self_p->dev_p->regs_p->MMR);
+    /* 5574912: 00000000 01010101 00010001 00000000 */
+    switch(internalAddressSize) {
+        case 0:
+            self_p->dev_p->regs_p->IADR = 0x00;
+            break;
+        case 1:
+            self_p->dev_p->regs_p->IADR = internalAddress & 0x000000ff;
+            break;
+        case 2:
+            self_p->dev_p->regs_p->IADR = internalAddress & 0x0000ffff;
+            break;
+        case 3:
+            self_p->dev_p->regs_p->IADR = internalAddress & 0x00ffffff;
+            break;
+    }
+            
+    std_printf(FSTR("i2c0 port read txn IADR %lu\n"), self_p->dev_p->regs_p->IADR);
+
+
+    std_printf(FSTR("i2c0 port read txn Setup Done \n"));
 
 
     /* Do this in ISR */
@@ -467,12 +549,11 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
     std_printf(FSTR("i2c0 thrd_p: %ld\n"),  self_p->thrd_p);
     std_printf(FSTR("i2c0 IMR A: %ld\n"),  self_p->dev_p->regs_p->IMR);
         // 263: 1 0000 0111
-    std_printf(FSTR("i2c read txn sys Lock\n"));
 
     /* Enable NVIC */
 
     std_printf(FSTR("i2c read txn START Read # %d\n"), size);
-    sys_lock(); 
+    std_printf(FSTR("i2c0 IMR B: %ld\n"),  self_p->dev_p->regs_p->IMR);
     /* START */
     /* This action is necessary when the TWI peripheral wants to read data from a slave. When configured in Master Mode with a
        write operation, a frame is sent as soon as the user writes a character in the Transmit Holding Register (TWI_THR). */
@@ -483,12 +564,59 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
         /* > 1  Byte: TWI_CR = START */
         self_p->dev_p->regs_p->CR = SAM_TWI_CR_START;
     }
-    std_printf(FSTR("i2c read txn START-post\n"));
-
-    std_printf(FSTR("i2c0 IMR B: %ld\n"),  self_p->dev_p->regs_p->IMR);
+/*
+    std_printf(FSTR("i2c read txn sys Lock\n"));
+    sys_lock(); 
+    self_p->dev_p->regs_p->IER = SAM_TWI_IER_TXCOMP | SAM_TWI_IER_RXRDY | SAM_TWI_IER_TXRDY | SAM_TWI_IER_NACK;
     thrd_suspend_isr(NULL);
-    /* nvic_disable_interrupt(self_p->dev_p->id); */
     sys_unlock(); 
+*/
+
+
+    std_printf(FSTR("i2c0 read loop start \n"));
+    uint32_t raw_status;
+    uint32_t status;
+    uint8_t done = 0;
+    while(!done) {
+        raw_status = (dev_p->regs_p->SR & 0xffff); 
+        /* ISR Only:  status = raw_status & dev_p->regs_p->IMR;  */
+        status = raw_status ; 
+        std_printf(FSTR("i2c read txn status %lu => %lu\n"), raw_status, status);
+        if (status == 0) { thrd_sleep_ms(1000); continue; }
+
+        if ((status & SAM_TWI_SR_NACK) == SAM_TWI_SR_NACK) {
+                std_printf(FSTR("NACK\n"));
+                dev_p->regs_p->IDR = 0xffff; /* Disable Interrupts */
+                done = 1;
+        } else if ((status & SAM_TWI_SR_TXCOMP) == SAM_TWI_SR_TXCOMP) {
+                std_printf(FSTR("TXCOMP\n"));
+                dev_p->regs_p->IDR = 0xffff; /* Disable Interrupts */
+                done = 1;
+        } else if ((status & SAM_TWI_SR_RXRDY) == SAM_TWI_SR_RXRDY) {
+                std_printf(FSTR("RXRDY\n"));
+                /* Read a byte */
+                uint32_t rhr = dev_p->regs_p->RHR; /* Automatically resets RXRDY */
+                *self_p->buf_p = (uint8_t)(0xff & rhr);
+                std_printf(FSTR("i2c read RHR %lu => %lu\n"), rhr, *self_p->buf_p);
+                self_p->buf_p++;;
+                self_p->size--;
+
+                if(self_p->size == 1) {
+                    self_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
+                }
+        } else if ((status & SAM_TWI_SR_TXRDY) == SAM_TWI_SR_TXRDY) {
+                std_printf(FSTR("TXRDY\n"));
+                self_p->dev_p->regs_p->THR = *self_p->buf_p++;
+                self_p->size--;
+
+                if(self_p->size == 1) {
+                    self_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
+                }
+        } else {
+            std_printf(FSTR("i2c read txn WAIT\n"));
+        }
+    }
+
 
     std_printf(FSTR("i2c read txn sys unlocked\n"));
 
