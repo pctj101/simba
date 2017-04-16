@@ -42,11 +42,13 @@ struct i2c_device_t {
 
 struct i2c_driver_t {
     struct i2c_device_t *dev_p;
-    int address;
-    int twbr;
-    volatile ssize_t size;
-    uint8_t *buf_p;
-    struct thrd_t *thrd_p;
+    int address; /* What most people think about when they think of an i2c address for the chip */
+    uint32_t internalAddress;        /* SAM Has concept of internal address */
+    uint8_t  internalAddressSize;    /* SAM Has concept of internal address size (0,1,2,3 bytes) */
+    int twbr;                   /* Baud Rate */
+    volatile ssize_t size; /* Remember remaining bytes to send */
+    uint8_t *buf_p; /* Remember pointer to what we are reading/writing so we have it available in interrupts */
+    struct thrd_t *thrd_p; 
 };
 
 #endif
