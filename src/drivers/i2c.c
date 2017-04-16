@@ -222,6 +222,21 @@ ssize_t i2c_read(struct i2c_driver_t *self_p,
     return (i2c_port_read(self_p, address, buf_p, size));
 }
 
+ssize_t i2c_read_txn(struct i2c_driver_t *self_p,
+                 int address,
+                 int internalAddress,
+                 int internalAddresssSize,
+                 void *buf_p,
+                 size_t size)
+{
+    ASSERTN(self_p != NULL, EINVAL);
+    ASSERTN(address < 128, EINVAL);
+    ASSERTN(buf_p != NULL, EINVAL);
+    ASSERTN(size > 0, EINVAL);
+
+    return (i2c_port_read_txn(self_p, address, internalAddress, internalAddressSize, buf_p, size));
+}
+
 ssize_t i2c_write(struct i2c_driver_t *self_p,
                   int address,
                   const void *buf_p,

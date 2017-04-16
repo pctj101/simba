@@ -109,6 +109,13 @@ ssize_t i2c_read(struct i2c_driver_t *self_p,
                  void *buf_p,
                  size_t size);
 
+ssize_t i2c_read_txn(struct i2c_driver_t *self_p,
+                 int address,
+                 int internalAddress,
+                 int internalAddressSize,
+                 void *buf_p,
+                 size_t size);
+
 /**
  * Write given number of bytes from given buffer to given slave.
  *
