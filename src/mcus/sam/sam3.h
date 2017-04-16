@@ -2560,6 +2560,24 @@ struct sam_dacc_t {
 /* Write Protect Mode Register. */
 #define SAM_DACC_WPMR_WPEN              BIT(0)
 
+
+/* TODO: How Do I Number This?. TWI Controller. */
+struct sam_twi_t {
+    uint32_t CR;
+    uint32_t MMR;
+    uint32_t SMR;
+    uint32_t IADR;
+    uint32_t CWGR;
+    uint32_t reserved0[3];
+    uint32_t SR;
+    uint32_t IER;
+    uint32_t IDR;
+    uint32_t IMR;
+    uint32_t RHR;
+    uint32_t THR;
+};
+
+
 /* Base addresses of peripherals. */
 #define SAM_HSMCI      ((volatile struct sam_hsmci_t  *)0x40000000u)
 #define SAM_SSC        ((volatile struct sam_ssc_t    *)0x40004000u)

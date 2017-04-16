@@ -160,6 +160,7 @@ DRIVERS_SRC ?= adc.c \
                mcp2515.c \
                owi.c \
                pin.c \
+               i2c.c \
                i2c_soft.c \
                sd.c \
                spi.c \

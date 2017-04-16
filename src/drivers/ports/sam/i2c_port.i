@@ -29,8 +29,11 @@
  */
 
 /* SAM: TWI Address */
-#define SAM_TWI_0       0x4008C000
-#define SAM_TWI_1       0x40090000
+/* from sam3.h */
+/*
+#define SAM_TWI0       ((volatile struct sam_twi_t    *)0x4008c000u)
+#define SAM_TWI1       ((volatile struct sam_twi_t    *)0x40090000u)
+*/
 
 /* SAM: Register Mapping */
 #define SAM_TWI_CR      0x00 /* W/O */
@@ -409,6 +412,33 @@ int i2c_port_stop(struct i2c_driver_t *self_p)
 
 ssize_t i2c_port_read(struct i2c_driver_t *self_p,
                       int address,
+                      void *buf_p,
+                      size_t size)
+{
+    /* After i2c Init */
+    /* Master Mode: Transfer Direction Bit (Write ===> bit MREAD 1) */
+
+    /* START */
+        /* 1 Byte: TWI_CR = START | STOP */
+        /* > 1  Byte: TWI_CR = START */
+
+    /* Loop for N-1 bytes to read*/
+        /* Wait for: RXRDY = 1 (Poll or ISR) */
+        /* TWI_RHR = Byte to Read */
+
+    /* For last 1 byte to read */
+    /* TWI_CR = STOP */
+        /* Wait for: RXRDY = 1 (Poll or ISR) */
+        /* TWI_RHR = Byte to Read */
+
+    /* Wait for: TXCOMP = 1 (Poll or ISR) */
+    return (transfer(self_p, address, buf_p, size, I2C_READ));
+}
+
+ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
+                      int address,
+                      int internalAddress,
+                      int internalAddressSize,
                       void *buf_p,
                       size_t size)
 {
