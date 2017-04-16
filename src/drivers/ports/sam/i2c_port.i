@@ -188,12 +188,17 @@ static ssize_t transfer(struct i2c_driver_t *self_p,
     thrd_suspend_isr(NULL);
     sys_unlock();
 
-    return (size - self_p->size);
+    return (size - self_p->size); /* return delta between "original size" and "remaining size" */
 }
 
+/* There are 2 TWI Vects for SAM: 
+    NVIC TWI0 ID #22
+    NVIC TWI1 ID #23
+*/
 ISR(TWI_vect)
 {
-    struct i2c_device_t *dev_p = &i2c_device[0];
+    struct i2c_device_t *dev_p = &i2c_device[0]; /* NVIC TWI0 ID #22 */
+    struct i2c_device_t *dev_p = &i2c_device[1]; /* NVIC TWI1 ID #23 */
     struct i2c_driver_t *drv_p = dev_p->drv_p;
     uint8_t status;
 
@@ -201,9 +206,44 @@ ISR(TWI_vect)
         return;
     }
 
-    status = (TWSR & 0xf8);
+    status = (SAM_TWI_SR & 0xffff);
 
     switch (status) {
+        case SAM_TWI_SR_TXCOMP:
+            break;
+        case SAM_TWI_SR_RXRDY:
+            break;
+        case SAM_TWI_SR_TXRDY:
+            break;
+        case SAM_TWI_SR_SVREAD:
+            /* Slave: Note yet handled */
+            break;
+        case SAM_TWI_SR_SVACC:
+            /* Slave: Note yet handled */
+            break;
+        case SAM_TWI_SR_GACC:
+            break;
+        case SAM_TWI_SR_OVRE:
+            break;
+        case SAM_TWI_SR_NACK:
+            break;
+        case SAM_TWI_SR_ARBLST:
+            /* MultiMaster: Note yet handled */
+            break;
+        case SAM_TWI_SR_SCLWS:
+            break;
+        case SAM_TWI_SR_EOSACC:
+            break;
+        case SAM_TWI_SR_ENDRX:
+            break;
+        case SAM_TWI_SR_ENDTX:
+            break;
+        case SAM_TWI_SR_RXBUFF:
+            break;
+        case SAM_TWI_SR_TXBUFF:
+            break;
+    }
+
 
         /* Start. */
     case I2C_M_START:
@@ -348,11 +388,19 @@ int i2c_port_start(struct i2c_driver_t *self_p)
     self_p->dev_p->drv_p = self_p;
     self_p->thrd_p = NULL;
 
-    TWSR = 0;
-    TWBR = self_p->twbr;
+    /* Set TWI Clock (CLDIV, CHDIV, CKDIV) in TWI_CWGR */
+    /* Master Enable: TWI_CR = MSEN + SVDIS */
+    /* Master Mode: 
+        Set:
+            - Device Slave Address
+            - Internal Address Size if IADR Used
+                - if IADRSZ then TWI_IADR = Internal Address 
+    */
+    
 
     return (0);
 }
+        
 
 int i2c_port_stop(struct i2c_driver_t *self_p)
 {
@@ -364,6 +412,23 @@ ssize_t i2c_port_read(struct i2c_driver_t *self_p,
                       void *buf_p,
                       size_t size)
 {
+    /* After i2c Init */
+    /* Master Mode: Transfer Direction Bit (Write ===> bit MREAD 1) */
+
+    /* START */
+        /* 1 Byte: TWI_CR = START | STOP */
+        /* > 1  Byte: TWI_CR = START */
+
+    /* Loop for N-1 bytes to read*/
+        /* Wait for: RXRDY = 1 (Poll or ISR) */
+        /* TWI_RHR = Byte to Read */
+
+    /* For last 1 byte to read */
+    /* TWI_CR = STOP */
+        /* Wait for: RXRDY = 1 (Poll or ISR) */
+        /* TWI_RHR = Byte to Read */
+
+    /* Wait for: TXCOMP = 1 (Poll or ISR) */
     return (transfer(self_p, address, buf_p, size, I2C_READ));
 }
 
@@ -372,6 +437,14 @@ ssize_t i2c_port_write(struct i2c_driver_t *self_p,
                        const void *buf_p,
                        size_t size)
 {
+    /* After i2c Init */
+    /* Master Mode: Transfer Direction Bit (Write ===> bit MREAD 0) */
+    /* Start sending data */
+    /* Loop until no more bytes to send*/
+        /* TWI_THR = Byte to Send */
+        /* Wait for: TXRDY = 1 (Poll or ISR) */
+    /* TWI_CR = STOP */
+        /* Wait for: TXCOMP = 1 (Poll or ISR) */
     return (transfer(self_p, address, (void *)buf_p, size, I2C_WRITE));
 }
 
@@ -379,6 +452,7 @@ int i2c_port_scan(struct i2c_driver_t *self_p,
                   int address)
 {
     int res;
+/*
 
     self_p->address = ((address << 1) | I2C_WRITE);
     self_p->size = 0;
@@ -392,29 +466,36 @@ int i2c_port_scan(struct i2c_driver_t *self_p,
     sys_unlock();
 
     return (res == 0);
+*/
+    return (0);
 }
 
 int i2c_port_slave_start(struct i2c_driver_t *self_p)
 {
+/*
     self_p->dev_p->drv_p = self_p;
     self_p->thrd_p = NULL;
 
     TWSR = 0;
     TWAR = (self_p->address << 1);
     TWCR = (_BV(TWEA) | _BV(TWEN) | _BV(TWIE));
+*/
 
     return (0);
 }
 
 int i2c_port_slave_stop(struct i2c_driver_t *self_p)
 {
+/*
     return (0);
+*/
 }
 
 ssize_t i2c_port_slave_read(struct i2c_driver_t *self_p,
                             void *buf_p,
                             size_t size)
 {
+/*
     sys_lock();
 
     /* Read immediately if already addressed by the master. */
@@ -429,12 +510,15 @@ ssize_t i2c_port_slave_read(struct i2c_driver_t *self_p,
     sys_unlock();
 
     return (size - self_p->size);
+*/
+    return (0);
 }
 
 ssize_t i2c_port_slave_write(struct i2c_driver_t *self_p,
                              const void *buf_p,
                              size_t size)
 {
+/*
     sys_lock();
     self_p->buf_p = (void *)buf_p;
 
@@ -456,4 +540,6 @@ ssize_t i2c_port_slave_write(struct i2c_driver_t *self_p,
     sys_unlock();
 
     return (size - self_p->size);
+*/
+    return(0);
 }
