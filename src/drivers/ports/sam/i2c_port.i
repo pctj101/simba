@@ -302,7 +302,6 @@ static void isr(int index)
     }
 #endif
 }
-#endif
 
 
 #define TWI_ISR(vector, index)                 \
@@ -318,6 +317,7 @@ TWI_ISR(twi0, 0)
 TWI_ISR(twi1, 1)
 #endif
 
+#endif
 
 
 int i2c_port_module_init()
@@ -361,6 +361,7 @@ void i2c_set_clock( struct i2c_device_t *dev_p, uint32_t dwTwCk, uint32_t dwMCk 
         }
     }
 
+    /* Typical Arduino Due: 100KHz => CKDIV = 1 and CLDIV/CHDIV = 208 */
     std_printf( FSTR("Using CKDIV = %u and CLDIV/CHDIV = %u\n\r"), dwCkDiv, dwClDiv ) ;
 
     dev_p->regs_p->CWGR = 0 ;
@@ -368,11 +369,11 @@ void i2c_set_clock( struct i2c_device_t *dev_p, uint32_t dwTwCk, uint32_t dwMCk 
 }
 
 
-bool waitForTxcomp(struct i2c_device_t *dev_p)
+uint8_t waitForTxcomp(struct i2c_device_t *dev_p)
 {
   uint32_t status = 0;
   while ((status & SAM_TWI_SR_TXCOMP) != SAM_TWI_SR_TXCOMP) {
-    status = (dev_p->regs_p->>SR & 0xffff);
+    status = (dev_p->regs_p->SR & 0xffff);
     if ((status & SAM_TWI_SR_NACK) == SAM_TWI_SR_NACK) {
       return 0;
     }
@@ -380,7 +381,7 @@ bool waitForTxcomp(struct i2c_device_t *dev_p)
   return 1;
 }
 
-bool waitForTxrdy(struct i2c_device_t *dev_p)
+uint8_t waitForTxrdy(struct i2c_device_t *dev_p)
 {
   uint32_t status = 0;
   while ((status & SAM_TWI_SR_TXRDY) != SAM_TWI_SR_TXRDY) {
@@ -392,7 +393,7 @@ bool waitForTxrdy(struct i2c_device_t *dev_p)
   return 1;
 }
 
-bool waitForRxrdy(struct i2c_device_t *dev_p)
+uint8_t waitForRxrdy(struct i2c_device_t *dev_p)
 {
   uint32_t status = 0;
   while ((status & SAM_TWI_SR_RXRDY) != SAM_TWI_SR_RXRDY) {
@@ -469,20 +470,21 @@ int i2c_port_start(struct i2c_driver_t *self_p)
     pio_p->ABSR &= ~mask;
 
     /* SVEN: TWI Slave Mode Enabled */
-    self_p->dev_p->regs_p->CR = SAM_TWI_CR_SVEN;
+    dev_p->regs_p->CR = SAM_TWI_CR_SVEN;
     i2c_port_stop(self_p);
     
     /* MSEN: TWI Master Mode Enabled */
-    self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSEN;
-    i2c_set_clock( self_p->dev_p, 100000, 84000000);
+    dev_p->regs_p->CR = SAM_TWI_CR_MSEN;
+    i2c_set_clock( dev_p, self_p->twbr, F_CPU);
+    /* i2c_set_clock( dev_p, self_p->twbr, 84000000); */
 
     /* Disable Peripheral DMA transfers */
     #define UART_PTCR_RXTDIS (0x1u << 1) /**< \brief (UART_PTCR) Receiver Transfer Disable */
     #define UART_PTCR_TXTDIS (0x1u << 9) /**< \brief (UART_PTCR) Transmitter Transfer Disable */
-    pio_p->PTCR = UART_PTCR_RXTDIS | UART_PTCR_TXTDIS;
+    dev_p->regs_p->PTCR = UART_PTCR_RXTDIS | UART_PTCR_TXTDIS;
 
     /* self_p->dev_p->regs_p->IDR = (0xfffffffful); */ /* Disable TWI Interrupts */
-    pmc_peripheral_clock_enable(self_p->dev_p->id);
+    pmc_peripheral_clock_enable(dev_p->id);
     /*nvic_enable_interrupt(self_p->dev_p->id);  */
 
 
@@ -533,33 +535,6 @@ int i2c_port_start(struct i2c_driver_t *self_p)
         
 
 
-ssize_t i2c_port_read(struct i2c_driver_t *self_p,
-                      int address,
-                      void *buf_p,
-                      size_t size)
-{
-    /* After i2c Init */
-    /* Master Mode: Transfer Direction Bit (Write ===> bit MREAD 1) */
-
-    /* START */
-        /* 1 Byte: TWI_CR = START | STOP */
-        /* > 1  Byte: TWI_CR = START */
-
-    /* Loop for N-1 bytes to read*/
-        /* Wait for: RXRDY = 1 (Poll or ISR) */
-        /* TWI_RHR = Byte to Read */
-
-    /* For last 1 byte to read */
-    /* TWI_CR = STOP */
-        /* Wait for: RXRDY = 1 (Poll or ISR) */
-        /* TWI_RHR = Byte to Read */
-
-    /* Wait for: TXCOMP = 1 (Poll or ISR) */
-
-
-    /* Set reasonable defaults for typcailly unused internalAddress / internalAddressSize */
-    return i2c_port_read_txn(self_p, address, 0, 0, buf_p, size);
-}
 
 
 ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
@@ -621,7 +596,7 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
       if (waitForRxrdy(dev_p)) {
         /* Read a byte */
         rhr = dev_p->regs_p->RHR; /* Automatically resets RXRDY */
-        *buf_p = (uint8_t)(0xff & rhr);
+        *(uint8_t*)buf_p = (uint8_t)(0xff & rhr);
         buf_p++;;
         /* 16 of 16 left */
         remaining--;
@@ -639,10 +614,87 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
     }
 
     if (!waitForTxcomp(dev_p)) {
-        /* Serial.println("i2c0 SAM_TWI_CR_STOP NACK"); */
+          std_printf(FSTR("i2c0 SAM_TWI_CR_STOP NACK\n"));
     }
     return (size - remaining);
     /* return (size - self_p->size); */ /* return delta between "original size" and "remaining size" */
+}
+
+ssize_t i2c_port_read(struct i2c_driver_t *self_p,
+                      int address,
+                      void *buf_p,
+                      size_t size)
+{
+    /* Set reasonable defaults for typcailly unused internalAddress / internalAddressSize */
+    return i2c_port_read_txn(self_p, address, 0, 0, buf_p, size);
+}
+
+
+ssize_t i2c_port_write_txn(struct i2c_driver_t *self_p,
+                      int address,
+                      int internalAddress,
+                      int internalAddressSize,
+                      const void *buf_p,
+                      size_t size)
+{
+    struct i2c_device_t *dev_p = self_p->dev_p;
+    uint8_t remaining = size;
+    uint8_t *wbuf_p = (uint8_t *)buf_p;
+
+    std_printf(FSTR("i2c0 port write txn Start\n"));
+
+    /* self_p->address = address; */ /* Why do we need to remember this? */
+    self_p->buf_p = (void *)buf_p;
+    self_p->size = size;
+    self_p->thrd_p = thrd_self();
+
+    std_printf(FSTR("i2c0 port write txn registered args\n"));
+    std_printf(FSTR("i2c0 port write txn master direction\n"));
+
+    /* Master Mode: Transfer Direction Bit (READ ===> bit MREAD 1) */
+    dev_p->regs_p->MMR = SAM_TWI1->MMR = ((address << 16) & SAM_TWI_MMR_DADR_MASK) | ((internalAddressSize & 0b11) << 8);
+    std_printf(FSTR("i2c0 port write txn MMR %lu\n"), self_p->dev_p->regs_p->MMR);
+
+    /* 5574912: 00000000 01010101 00010001 00000000 */
+    switch(internalAddressSize) {
+        case 0:
+            dev_p->regs_p->IADR = 0x00;
+            break;
+        case 1:
+            dev_p->regs_p->IADR = internalAddress & 0x000000ff;
+            break;
+        case 2:
+            dev_p->regs_p->IADR = internalAddress & 0x0000ffff;
+            break;
+        case 3:
+            dev_p->regs_p->IADR = internalAddress & 0x00ffffff;
+            break;
+    }
+            
+    std_printf(FSTR("i2c0 port write txn IADR %lu\n"), dev_p->regs_p->IADR);
+    std_printf(FSTR("i2c0 port write txn Setup Done \n"));
+
+    while(remaining > 0) {
+      /* Note SAM will clock stretch while waiting for THR */
+      SAM_TWI1->THR = *wbuf_p;
+
+      if (!waitForTxrdy(dev_p)) {
+          break;
+      }
+
+      if (remaining == 1) {
+        /* 1 Byte: TWI_CR = START | STOP */
+        SAM_TWI1->CR = SAM_TWI_CR_STOP;
+        if (!waitForTxcomp(dev_p)) {
+          std_printf(FSTR("i2c0 SAM_TWI_CR_STOP NACK\n"));
+          break;
+        }
+      }
+      remaining--;
+      wbuf_p++;
+    }
+    std_printf(FSTR("i2c0 write exit\n"));
+    return (size - remaining);
 }
 
 ssize_t i2c_port_write(struct i2c_driver_t *self_p,
@@ -650,16 +702,7 @@ ssize_t i2c_port_write(struct i2c_driver_t *self_p,
                        const void *buf_p,
                        size_t size)
 {
-    /* After i2c Init */
-    /* Master Mode: Transfer Direction Bit (Write ===> bit MREAD 0) */
-    /* Start sending data */
-    /* Loop until no more bytes to send*/
-        /* TWI_THR = Byte to Send */
-        /* Wait for: TXRDY = 1 (Poll or ISR) */
-    /* TWI_CR = STOP */
-        /* Wait for: TXCOMP = 1 (Poll or ISR) */
-    /* return (transfer(self_p, address, (void *)buf_p, size, I2C_WRITE)); */
-    return (0);
+    return i2c_port_write_txn(self_p, address, 0, 0, buf_p, size);
 }
 
 int i2c_port_scan(struct i2c_driver_t *self_p,
