@@ -168,158 +168,6 @@
 #define SAM_TWI_THR_MASK        (0xff)
 
 
-
-#ifdef USE_ISR
-/* There are 2 TWI Vects for SAM: 
-    NVIC TWI0 ID #22 - ISR(twi0)
-    NVIC TWI1 ID #23 - ISR(twi1)
-*/
-static void isr(int index)
-{
-    struct i2c_device_t *dev_p = &i2c_device[index]; /* NVIC TWI0 ID #22 */
-    struct i2c_driver_t *drv_p = dev_p->drv_p;
-    uint32_t raw_status;
-    uint32_t status;
-
-    if (drv_p == NULL) {
-        return;
-    }
-
-    thrd_resume_isr(drv_p->thrd_p, 0);
-    return;
-
-
-
-    raw_status = (dev_p->regs_p->SR & 0xffff); 
-    status = raw_status & dev_p->regs_p->IMR; 
-
-
-/*
-#define DONTCRASH
-#ifndef DONTCRASH
-    std_printf(FSTR("isr_twi Start\n"));
-    std_printf(FSTR("isr_twi %ld: %lu -> %lu\n"), index, raw_status, status);
-#endif
-*/
-
-    /* status twi1 : 61449 - 1111 0000 0000 1001 */
-
-    if (status == 0) { return; }
-
-/*
-    std_printf(FSTR("isr_twi %ld: process\n"), index);
-*/
-
-    if (status & SAM_TWI_SR_TXCOMP) {
-            dev_p->regs_p->IDR = 0xffff;
-            thrd_resume_isr(drv_p->thrd_p, 0);
-    } else if (status & SAM_TWI_SR_RXRDY) {
-            /* Read a byte */
-            *drv_p->buf_p++ = (uint8_t)(0xff & dev_p->regs_p->RHR); /* Automatically resets RXRDY */
-            drv_p->size--;
-
-            if(drv_p->size == 1) {
-                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
-            }
-    } else if (status & SAM_TWI_SR_TXRDY) {
-            drv_p->dev_p->regs_p->THR = *drv_p->buf_p++;
-            drv_p->size--;
-
-            if(drv_p->size == 1) {
-                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
-            }
-    } else {
-        dev_p->regs_p->IDR = 0xffff;;
-        thrd_resume_isr(drv_p->thrd_p, 0);
-    }
-
-
-    return;
-
-#ifdef USE_SWITCH
-    switch (status) {
-        case SAM_TWI_SR_TXCOMP:
-            /* All done */
-            if(drv_p->size == 0) {
-                thrd_resume_isr(drv_p->thrd_p, 0);
-            }
-            break;
-        case SAM_TWI_SR_RXRDY:
-            /* Read a byte */
-            *drv_p->buf_p++ = (uint8_t)(0xff & dev_p->regs_p->RHR); /* Automatically resets RXRDY */
-            drv_p->size--;
-
-            if(drv_p->size == 1) {
-                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
-            }
-
-            break;
-        case SAM_TWI_SR_TXRDY:
-            drv_p->dev_p->regs_p->THR = *drv_p->buf_p++;
-            drv_p->size--;
-
-            if(drv_p->size == 1) {
-                drv_p->dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
-            }
-            break;
-        case SAM_TWI_SR_SVREAD:
-            /* Slave: Note yet handled */
-            break;
-        case SAM_TWI_SR_SVACC:
-            /* Slave: Note yet handled */
-            break;
-        case SAM_TWI_SR_GACC:
-            /* TODO: Unsure why this would occur */
-            break;
-        case SAM_TWI_SR_OVRE:
-            /* Error */
-            break;
-        case SAM_TWI_SR_NACK:
-            /* Error */
-            thrd_resume_isr(drv_p->thrd_p, 0);
-            break;
-        case SAM_TWI_SR_ARBLST:
-            /* MultiMaster: Note yet handled */
-            break;
-        case SAM_TWI_SR_SCLWS:
-            /* Slave: Note yet handled */
-            break;
-        case SAM_TWI_SR_EOSACC:
-            /* Slave: Note yet handled */
-            break;
-        case SAM_TWI_SR_ENDRX:
-            break;
-        case SAM_TWI_SR_ENDTX:
-            break;
-        case SAM_TWI_SR_RXBUFF:
-            break;
-        case SAM_TWI_SR_TXBUFF:
-            break;
-        default:
-            /* Error */
-            thrd_resume_isr(drv_p->thrd_p, 0);
-            break;
-    }
-#endif
-}
-
-
-#define TWI_ISR(vector, index)                 \
-    ISR(vector) {                               \
-        isr(index);                             \
-    }                                           \
-
-#if (I2C_DEVICE_MAX >= 1)
-TWI_ISR(twi0, 0)
-#endif
-
-#if (I2C_DEVICE_MAX >= 2)
-TWI_ISR(twi1, 1)
-#endif
-
-#endif
-
-
 int i2c_port_module_init()
 {
     return (0);
@@ -332,15 +180,12 @@ int i2c_port_init(struct i2c_driver_t *self_p,
 {
     self_p->dev_p = dev_p;
     self_p->twbr = baudrate;
-    self_p->address = address;
-
-
-
+    self_p->address = address; /* Perhaps only used for i2c slave mode? */
     return (0);
 }
 
-/* Example: i2c_set_clock( SAM_TWI1, 100000, 84000000); // 100KHz i2c clock, 84MHz CPU Clock */
-void i2c_set_clock( struct i2c_device_t *dev_p, uint32_t dwTwCk, uint32_t dwMCk )
+/* Example: i2c_port_set_clock( SAM_TWI1, 100000, 84000000); // 100KHz i2c clock, 84MHz CPU Clock */
+static void i2c_port_set_clock( struct i2c_device_t *dev_p, uint32_t dwTwCk, uint32_t dwMCk )
 {
     uint32_t dwCkDiv = 0 ;
     uint32_t dwClDiv ;
@@ -362,7 +207,7 @@ void i2c_set_clock( struct i2c_device_t *dev_p, uint32_t dwTwCk, uint32_t dwMCk 
     }
 
     /* Typical Arduino Due: 100KHz => CKDIV = 1 and CLDIV/CHDIV = 208 */
-    std_printf( FSTR("Using CKDIV = %u and CLDIV/CHDIV = %u\n\r"), dwCkDiv, dwClDiv ) ;
+    /* std_printf( FSTR("Using CKDIV = %u and CLDIV/CHDIV = %u\n\r"), dwCkDiv, dwClDiv ) ; */
 
     dev_p->regs_p->CWGR = 0 ;
     dev_p->regs_p->CWGR = (dwCkDiv << 16) | (dwClDiv << 8) | dwClDiv ;
@@ -475,8 +320,7 @@ int i2c_port_start(struct i2c_driver_t *self_p)
     
     /* MSEN: TWI Master Mode Enabled */
     dev_p->regs_p->CR = SAM_TWI_CR_MSEN;
-    i2c_set_clock( dev_p, self_p->twbr, F_CPU);
-    /* i2c_set_clock( dev_p, self_p->twbr, 84000000); */
+    i2c_port_set_clock( dev_p, self_p->twbr, F_CPU);
 
     /* Disable Peripheral DMA transfers */
     #define UART_PTCR_RXTDIS (0x1u << 1) /**< \brief (UART_PTCR) Receiver Transfer Disable */
@@ -486,49 +330,6 @@ int i2c_port_start(struct i2c_driver_t *self_p)
     /* self_p->dev_p->regs_p->IDR = (0xfffffffful); */ /* Disable TWI Interrupts */
     pmc_peripheral_clock_enable(dev_p->id);
     /*nvic_enable_interrupt(self_p->dev_p->id);  */
-
-
-    /* Set TWI Clock (CLDIV, CHDIV, CKDIV) in TWI_CWGR
-        Tmck from PowerManagementController
-            The Main Clock has two sources:
-            * 4/8/12 MHz Fast RC Oscillator which starts very quickly and is used at startup.
-                * After reset, the 4/8/12 MHz Fast RC Oscillator is enabled with the 4 MHz frequency selected and it is selected as the source of MAINCK. 
-                  MAINCK is the default clock selected to start up the system. 
-            * 3 to 20 MHz Crystal or Ceramic Resonator-based Oscillator which can be bypassed.
-
-        SCL Low Period = Tlow = ((CLDIV * 2^CKDIV) + 4) * Tmck
-        SCL High Period = Thigh = ((CHDIV * 2^CKDIV) + 4) * Tmck
-
-        Tmck 4mhz = 25us period (12.5us high/low)
-        @100khz => 10ms period (5ms high/low) or 40*TmckTime
-
-        CKDIV = 3
-        2^CKDIV = 8 (slow speed 100khz)
-        20 = CHDIV * 2^CKDIV  = CHDIV * 8
-        20/8 = ~2.5 = CHDIV 
-    */
-    /*self_p->dev_p->regs_p->CWGR = (SAM_TWI_CWGR_CKDIV_MASK & (3 << 16)) |
-                                        (SAM_TWI_CWGR_CHDIV_MASK & ( 0x02 << 8) ) |
-                                        (SAM_TWI_CWGR_CLDIV_MASK & 0x02);
-    */
-
-    /* Slow it down */
-    /*
-    self_p->dev_p->regs_p->CWGR = (SAM_TWI_CWGR_CKDIV_MASK & (7 << 16)) |
-                                        (SAM_TWI_CWGR_CHDIV_MASK & ( 0x0f << 8) ) |
-                                        (SAM_TWI_CWGR_CLDIV_MASK & 0x0f);
-    */
-
-    /* Master Enable: TWI_CR = MSEN + SVDIS */
-    /* self_p->dev_p->regs_p->CR = SAM_TWI_CR_MSEN | SAM_TWI_CR_SVDIS | SAM_TWI_CR_SWRST; */
-
-
-    /* Master Mode: 
-        Later on Read/Write Set:
-            - Device Slave Address
-            - Internal Address Size if IADR Used
-                - if IADRSZ then TWI_IADR = Internal Address 
-    */
 
     return (0);
 }
@@ -546,19 +347,15 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
 {
     struct i2c_device_t *dev_p = self_p->dev_p;
     uint8_t remaining = size;
-    std_printf(FSTR("i2c0 port read txn Start\n"));
 
     /* self_p->address = address; */ /* Why do we need to remember this? */
     self_p->buf_p = (void *)buf_p;
     self_p->size = size;
     self_p->thrd_p = thrd_self();
 
-    std_printf(FSTR("i2c0 port read txn registered args\n"));
 
     /* Master Mode: Transfer Direction Bit (READ ===> bit MREAD 1) */
-    std_printf(FSTR("i2c0 port read txn master direction\n"));
     dev_p->regs_p->MMR = ((address << 16) & SAM_TWI_MMR_DADR_MASK) | SAM_TWI_MMR_MREAD | ((internalAddressSize & 0b11) << 8);
-    std_printf(FSTR("i2c0 port read txn MMR %lu\n"), self_p->dev_p->regs_p->MMR);
 
     /* 5574912: 00000000 01010101 00010001 00000000 */
     switch(internalAddressSize) {
@@ -576,9 +373,6 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
             break;
     }
             
-    std_printf(FSTR("i2c0 port read txn IADR %lu\n"), dev_p->regs_p->IADR);
-    std_printf(FSTR("i2c0 port read txn Setup Done \n"));
-
     /* Read byte, Set Stop Condition if 1 byte left */
     dev_p->regs_p->RHR;
     if (remaining == 1) {
@@ -607,17 +401,15 @@ ssize_t i2c_port_read_txn(struct i2c_driver_t *self_p,
             dev_p->regs_p->CR = SAM_TWI_CR_STOP; /* Issue a stop for last byte */
         }
       } else {
-        /* Serial.println("twi1 error"); */
         done = 1;
       }
       if (remaining == 0) done = 1;
     }
 
     if (!waitForTxcomp(dev_p)) {
-          std_printf(FSTR("i2c0 SAM_TWI_CR_STOP NACK\n"));
+          /* std_printf(FSTR("i2c0 SAM_TWI_CR_STOP NACK\n")); */
     }
     return (size - remaining);
-    /* return (size - self_p->size); */ /* return delta between "original size" and "remaining size" */
 }
 
 ssize_t i2c_port_read(struct i2c_driver_t *self_p,
@@ -641,19 +433,15 @@ ssize_t i2c_port_write_txn(struct i2c_driver_t *self_p,
     uint8_t remaining = size;
     uint8_t *wbuf_p = (uint8_t *)buf_p;
 
-    std_printf(FSTR("i2c0 port write txn Start\n"));
 
     /* self_p->address = address; */ /* Why do we need to remember this? */
     self_p->buf_p = (void *)buf_p;
     self_p->size = size;
     self_p->thrd_p = thrd_self();
 
-    std_printf(FSTR("i2c0 port write txn registered args\n"));
-    std_printf(FSTR("i2c0 port write txn master direction\n"));
 
     /* Master Mode: Transfer Direction Bit (READ ===> bit MREAD 1) */
     dev_p->regs_p->MMR = SAM_TWI1->MMR = ((address << 16) & SAM_TWI_MMR_DADR_MASK) | ((internalAddressSize & 0b11) << 8);
-    std_printf(FSTR("i2c0 port write txn MMR %lu\n"), self_p->dev_p->regs_p->MMR);
 
     /* 5574912: 00000000 01010101 00010001 00000000 */
     switch(internalAddressSize) {
@@ -670,9 +458,6 @@ ssize_t i2c_port_write_txn(struct i2c_driver_t *self_p,
             dev_p->regs_p->IADR = internalAddress & 0x00ffffff;
             break;
     }
-            
-    std_printf(FSTR("i2c0 port write txn IADR %lu\n"), dev_p->regs_p->IADR);
-    std_printf(FSTR("i2c0 port write txn Setup Done \n"));
 
     while(remaining > 0) {
       /* Note SAM will clock stretch while waiting for THR */
@@ -686,14 +471,13 @@ ssize_t i2c_port_write_txn(struct i2c_driver_t *self_p,
         /* 1 Byte: TWI_CR = START | STOP */
         SAM_TWI1->CR = SAM_TWI_CR_STOP;
         if (!waitForTxcomp(dev_p)) {
-          std_printf(FSTR("i2c0 SAM_TWI_CR_STOP NACK\n"));
+          /* std_printf(FSTR("i2c0 SAM_TWI_CR_STOP NACK\n")); */
           break;
         }
       }
       remaining--;
       wbuf_p++;
     }
-    std_printf(FSTR("i2c0 write exit\n"));
     return (size - remaining);
 }
 
@@ -708,6 +492,7 @@ ssize_t i2c_port_write(struct i2c_driver_t *self_p,
 int i2c_port_scan(struct i2c_driver_t *self_p,
                   int address)
 {
+    /* Not yet implemented */
     return (0);
 }
 
@@ -731,11 +516,13 @@ int i2c_port_scan(struct i2c_driver_t *self_p,
 
 int i2c_port_slave_start(struct i2c_driver_t *self_p)
 {
+    /* Not yet implemented */
     return (0);
 }
 
 int i2c_port_slave_stop(struct i2c_driver_t *self_p)
 {
+    /* Not yet implemented */
     return (0);
 }
 
@@ -743,6 +530,7 @@ ssize_t i2c_port_slave_read(struct i2c_driver_t *self_p,
                             void *buf_p,
                             size_t size)
 {
+    /* Not yet implemented */
     return (0);
 }
 
@@ -750,6 +538,7 @@ ssize_t i2c_port_slave_write(struct i2c_driver_t *self_p,
                              const void *buf_p,
                              size_t size)
 {
+    /* Not yet implemented */
     return(0);
 }
 
