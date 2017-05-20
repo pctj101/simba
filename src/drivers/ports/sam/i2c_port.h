@@ -46,13 +46,13 @@ struct i2c_device_t {
 
 struct i2c_driver_t {
     struct i2c_device_t *dev_p; /* dev_p contains info about the TWI0 or TWI1 peripheral. Example Usage: dev_p->regs_p->CR */
-    int address; /* What most people think about when they think of an i2c address for the chip */
     int twbr;                   /* Baud Rate */
     volatile ssize_t size; /* Remember remaining bytes to send */
     uint8_t *buf_p; /* Remember pointer to what we are reading/writing so we have it available in interrupts */
     struct thrd_t *thrd_p; 
     
     /* Almost temporary variables */
+    int address; /* What most people think about when they think of an i2c address for the chip */
     uint32_t internalAddress;        /* SAM Has concept of internal address */
     uint8_t  internalAddressSize;    /* SAM Has concept of internal address size (0,1,2,3 bytes) */
 };
